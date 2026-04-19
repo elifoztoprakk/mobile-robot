@@ -122,7 +122,7 @@ def main():
         for event in pygame.event.get():
             if event.type == pygame.QUIT: pygame.quit(); return
 
-        keys = pygame.key.get_pressed() # Keyboard control [cite: 309, 474]
+        keys = pygame.key.get_pressed() # Keyboard control 
         robot.v = (keys[pygame.K_UP] - keys[pygame.K_DOWN]) * 150
         robot.omega = (keys[pygame.K_RIGHT] - keys[pygame.K_LEFT]) * 4
 
