@@ -4,6 +4,7 @@ import numpy as np
 
 from ekf          import EKF
 from landmarks    import LandmarkSensor
+from raycasting   import world_to_grid, scan_360_with_direction, raycast_beam_walls
 from visualisation_experiments import (
     append_limited, draw_polyline, draw_dotted_polyline,
     draw_covariance_ellipse, draw_estimated_robot, draw_hud,
@@ -16,10 +17,19 @@ ROBOT_RADIUS   = 20
 SENSOR_COUNT   = 12
 SENSOR_LIMIT   = 200
 
+# Grid-based raycasting configuration
+GRID_CELL_SIZE = 10  # pixels per grid cell
+GRID_WIDTH     = WIDTH // GRID_CELL_SIZE    # 90 cells
+GRID_HEIGHT    = HEIGHT // GRID_CELL_SIZE   # 70 cells
+RAYCAST_BEAMS  = 36  # beams for 360° scan (10° spacing)
+RAYCAST_RANGE  = 250  # max range in pixels
+
 WHITE = (255, 255, 255)
 BLACK = (0,   0,   0  )
 BLUE  = (0,   0,   215)
 GRAY  = (200, 200, 200)
+LIGHT_GREEN = (144, 238, 144)  # Free cells
+DARK_RED = (139, 0, 0)         # Occupied cells
 
 class CleaningRobot:
     def __init__(self, x, y):
@@ -138,6 +148,9 @@ def main():
         R=np.diag([10.0, 0.1])
     )
 
+    # Initialize occupancy grid (0 = unknown/free, 1 = occupied)
+    occupancy_grid = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=float)
+
     walls = [
         ((50, 50),   (850, 50)),
         ((50, 650),  (850, 650)),
@@ -185,6 +198,31 @@ def main():
             environment_landmarks, walls
         )
 
+        all_free = set()
+        all_occupied = set()
+        angle_step = 2 * math.pi / RAYCAST_BEAMS
+
+        for i in range(RAYCAST_BEAMS):
+            angle = robot.theta + i * angle_step
+            free, occ = raycast_beam_walls(
+                robot.x, robot.y,
+                angle,
+                RAYCAST_RANGE,
+                GRID_CELL_SIZE,
+                GRID_WIDTH, GRID_HEIGHT,
+                walls
+            )
+            all_free.update(free)
+            all_occupied.add(occ)
+        
+        for row, col in all_free:
+            if 0 <= row < GRID_HEIGHT and 0 <= col < GRID_WIDTH:
+                occupancy_grid[row, col] = max(0.0, occupancy_grid[row, col] - 0.1)
+
+        for row, col in all_occupied:
+            if 0 <= row < GRID_HEIGHT and 0 <= col < GRID_WIDTH:
+                occupancy_grid[row, col] = min(1.0, occupancy_grid[row, col] + 0.3)    
+
         # EKF
         ekf.predict(robot.v, robot.omega, dt)
         for l_id, noisy_range, noisy_bearing in measurements:
@@ -199,6 +237,26 @@ def main():
 
         # --- Draw ---
         screen.fill(WHITE)
+
+        # Draw occupancy grid (optional: set to False to disable)
+        DRAW_OCCUPANCY_GRID = True
+        if DRAW_OCCUPANCY_GRID:
+            for row in range(GRID_HEIGHT):
+                for col in range(GRID_WIDTH):
+                    if occupancy_grid[row, col] > 0.5:
+                        # Occupied
+                        cell_x = col * GRID_CELL_SIZE
+                        cell_y = row * GRID_CELL_SIZE
+                        pygame.draw.rect(screen, DARK_RED,
+                                       (cell_x, cell_y, GRID_CELL_SIZE, GRID_CELL_SIZE))
+                    elif occupancy_grid[row, col] > 0.2:
+                        # Partially occupied
+                        cell_x = col * GRID_CELL_SIZE
+                        cell_y = row * GRID_CELL_SIZE
+                        intensity = int(100 * occupancy_grid[row, col])
+                        pygame.draw.rect(screen, (intensity, intensity, 0),
+                                       (cell_x, cell_y, GRID_CELL_SIZE, GRID_CELL_SIZE))
+
         for wall in walls:
             pygame.draw.line(screen, BLUE, wall[0], wall[1], 4)
 
