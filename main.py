@@ -2,9 +2,10 @@ import pygame
 import math
 import numpy as np
 
-from ekf          import EKF
-from landmarks    import LandmarkSensor
-from raycasting   import world_to_grid, scan_360_with_direction, raycast_beam_walls
+from ekf             import EKF
+from landmarks       import LandmarkSensor
+from raycasting      import world_to_grid, scan_360_with_direction, raycast_beam_walls
+from occupancy_grid  import OccupancyGrid
 from visualisation_experiments import (
     append_limited, draw_polyline, draw_dotted_polyline,
     draw_covariance_ellipse, draw_estimated_robot, draw_hud,
@@ -148,8 +149,9 @@ def main():
         R=np.diag([10.0, 0.1])
     )
 
-    # Initialize occupancy grid (0 = unknown/free, 1 = occupied)
-    occupancy_grid = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=float)
+    # Initialize occupancy grid (Person 1's class — log-odds representation)
+    # All cells start at log-odds 0.0  ==  probability 0.5 (unknown)
+    grid = OccupancyGrid(WIDTH, HEIGHT, GRID_CELL_SIZE)
 
     walls = [
         ((50, 50),   (850, 50)),
@@ -213,15 +215,19 @@ def main():
                 walls
             )
             all_free.update(free)
-            all_occupied.add(occ)
+            if occ is not None:
+                all_occupied.add(occ)
         
+        # Apply the log-odds occupancy update rule from Person 1's class.
+        # This implements the recursive update from the assignment slides:
+        #     l_t,i = l_t-1,i + inverse_sensor_model(m_i, x_t, z_t) - l_0
+        # update_cell handles bounds-checking and the log-odds increments
+        # (l_free - l_prior for free cells, l_occ - l_prior for occupied cells).
         for row, col in all_free:
-            if 0 <= row < GRID_HEIGHT and 0 <= col < GRID_WIDTH:
-                occupancy_grid[row, col] = max(0.0, occupancy_grid[row, col] - 0.1)
+            grid.update_cell(col, row, is_occupied=False)
 
         for row, col in all_occupied:
-            if 0 <= row < GRID_HEIGHT and 0 <= col < GRID_WIDTH:
-                occupancy_grid[row, col] = min(1.0, occupancy_grid[row, col] + 0.3)    
+            grid.update_cell(col, row, is_occupied=True)
 
         # EKF
         ekf.predict(robot.v, robot.omega, dt)
@@ -239,23 +245,32 @@ def main():
         screen.fill(WHITE)
 
         # Draw occupancy grid (optional: set to False to disable)
+        # Per the slides: White = Free, Black = Occupied, Gray = Unknown (0.5).
+        # We pull the probability grid from Person 1's class (which converts
+        # log-odds back to [0, 1] probabilities) and render each cell in grayscale.
         DRAW_OCCUPANCY_GRID = True
         if DRAW_OCCUPANCY_GRID:
+            prob_grid = grid.get_probability_grid()
             for row in range(GRID_HEIGHT):
                 for col in range(GRID_WIDTH):
-                    if occupancy_grid[row, col] > 0.5:
-                        # Occupied
-                        cell_x = col * GRID_CELL_SIZE
-                        cell_y = row * GRID_CELL_SIZE
-                        pygame.draw.rect(screen, DARK_RED,
-                                       (cell_x, cell_y, GRID_CELL_SIZE, GRID_CELL_SIZE))
-                    elif occupancy_grid[row, col] > 0.2:
-                        # Partially occupied
-                        cell_x = col * GRID_CELL_SIZE
-                        cell_y = row * GRID_CELL_SIZE
-                        intensity = int(100 * occupancy_grid[row, col])
-                        pygame.draw.rect(screen, (intensity, intensity, 0),
-                                       (cell_x, cell_y, GRID_CELL_SIZE, GRID_CELL_SIZE))
+                    p = prob_grid[row, col]
+                    # Skip drawing for cells that are still unknown (~0.5)
+                    # to keep the background white and reduce flicker.
+                    if abs(p - 0.5) < 0.05:
+                        continue
+                    # Map probability -> shade. p=0 -> white (255), p=1 -> black (0).
+                    shade = int(255 * (1.0 - p))
+                    cell_x = col * GRID_CELL_SIZE
+                    cell_y = row * GRID_CELL_SIZE
+                    if p > 0.5:
+                        # Occupied: keep the dramatic dark-red so walls pop.
+                        red = max(60, shade)
+                        pygame.draw.rect(screen, (139, red // 3, red // 3),
+                                         (cell_x, cell_y, GRID_CELL_SIZE, GRID_CELL_SIZE))
+                    else:
+                        # Free space: light gray fading to white.
+                        pygame.draw.rect(screen, (shade, shade, shade),
+                                         (cell_x, cell_y, GRID_CELL_SIZE, GRID_CELL_SIZE))
 
         for wall in walls:
             pygame.draw.line(screen, BLUE, wall[0], wall[1], 4)

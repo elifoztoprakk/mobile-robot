@@ -34,26 +34,27 @@ def world_to_grid(x: float, y: float, cell_size: float) -> Tuple[int, int]:
 
 def ray_intersects_wall(robot_x, robot_y, angle, wall):
     """
-    Check if a ray intersects a wall segment.
-    Returns distance to intersection, or None if no intersection.
+    Check if a ray from the robot at the given angle intersects a wall segment.
+    Returns the distance along the ray to the intersection, or None if no intersection.
     """
     x1, y1 = wall[0]
     x2, y2 = wall[1]
     dx = math.cos(angle)
     dy = math.sin(angle)
-    
+
     denom = (x2 - x1) * dy - (y2 - y1) * dx
     if abs(denom) < 1e-6:
-        return None  # parallel
-    
-    t = ((robot_x - x1) * dy - (robot_y - y1) * dx) / denom
-    u = ((robot_x - x1) * (y2 - y1) - (robot_y - y1) * (x2 - x1)) / \
-        ((x2 - x1) * dy - (y2 - y1) * dx)
-    
-    if t < 0 or not (0 <= u <= 1):
+        return None  # ray parallel to wall
+
+    # ray_dist = how far along the ray the intersection lies (must be > 0 = in front of robot)
+    ray_dist = ((robot_x - x1) * (y2 - y1) - (robot_y - y1) * (x2 - x1)) / denom
+    # wall_param = position along the wall segment (must be in [0, 1] to actually hit the wall)
+    wall_param = ((robot_x - x1) * dy - (robot_y - y1) * dx) / denom
+
+    if ray_dist < 0 or not (0 <= wall_param <= 1):
         return None  # intersection behind robot or outside wall segment
-    
-    return u  # distance along ray
+
+    return ray_dist
 
 
 def raycast_beam_walls(
@@ -67,28 +68,39 @@ def raycast_beam_walls(
     """
     Cast a beam and stop at the nearest wall intersection.
     Returns (free_cells, occupied_cell) based on actual wall geometry.
+    If no wall is hit within max_range, occupied_cell is None and the
+    endpoint is treated as free space.
     """
     # Find closest wall intersection
     min_dist = max_range
+    hit_wall = False
     for wall in walls:
         d = ray_intersects_wall(robot_x, robot_y, angle, wall)
         if d is not None and 0 < d < min_dist:
             min_dist = d
-    
-    # Compute hit point in world coordinates
-    hit_x = robot_x + min_dist * math.cos(angle)
-    hit_y = robot_y + min_dist * math.sin(angle)
-    
-    # Convert robot and hit point to grid
+            hit_wall = True
+
+    # Compute endpoint in world coordinates
+    end_x = robot_x + min_dist * math.cos(angle)
+    end_y = robot_y + min_dist * math.sin(angle)
+
+    # Convert robot and endpoint to grid
     robot_col = int(robot_x / cell_size)
     robot_row = int(robot_y / cell_size)
-    hit_col = max(0, min(grid_width - 1,  int(hit_x / cell_size)))
-    hit_row = max(0, min(grid_height - 1, int(hit_y / cell_size)))
-    
+    end_col = max(0, min(grid_width - 1,  int(end_x / cell_size)))
+    end_row = max(0, min(grid_height - 1, int(end_y / cell_size)))
+
     # Walk the grid cells along the beam
-    free_cells = bresenham_line(robot_col, robot_row, hit_col, hit_row)
-    occupied_cell = (hit_row, hit_col)
-    
+    free_cells = bresenham_line(robot_col, robot_row, end_col, end_row)
+
+    if hit_wall:
+        # Real wall hit -> endpoint is occupied
+        occupied_cell = (end_row, end_col)
+    else:
+        # No wall within max_range -> endpoint is also free space, nothing occupied
+        free_cells.append((end_row, end_col))
+        occupied_cell = None
+
     return free_cells, occupied_cell
 
 def grid_to_world(row: int, col: int, cell_size: float) -> Tuple[float, float]:
