@@ -85,19 +85,16 @@ def draw_estimated_robot(screen, estimated_pose):
     )
 
 
-def draw_hud(screen, font, robot_v, robot_omega, error):
+def draw_hud(screen, font, robot_v, robot_omega, error, extra_lines=None):
     """Draw speed, error and legend text."""
-    speed_txt = font.render(
+    lines = [
         f"v: {int(robot_v)} | omega: {int(robot_omega)} | error: {error:.1f}px",
-        True, DARK_GRAY
-    )
-    legend_1 = font.render(
-        "solid orange: actual trajectory", True, DARK_GRAY
-    )
-    legend_2 = font.render(
+        "solid orange: actual trajectory",
         "dotted purple: estimated trajectory | ellipse: covariance",
-        True, DARK_GRAY
-    )
-    screen.blit(speed_txt, (10, 10))
-    screen.blit(legend_1,  (10, 30))
-    screen.blit(legend_2,  (10, 50))
+    ]
+    if extra_lines:
+        lines.extend(extra_lines)
+
+    for idx, line in enumerate(lines):
+        text = font.render(line, True, DARK_GRAY)
+        screen.blit(text, (10, 10 + idx * 20))

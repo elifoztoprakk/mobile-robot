@@ -1,59 +1,87 @@
-import pygame
+import argparse
 import math
-import numpy as np
+from dataclasses import dataclass
 
-from ekf             import EKF
-from landmarks       import LandmarkSensor
-from raycasting      import world_to_grid, scan_360_with_direction, raycast_beam_walls
-from occupancy_grid  import OccupancyGrid
+import numpy as np
+import pygame
+
+from ekf import EKF
+from landmarks import LandmarkSensor
+from occupancy_grid import OccupancyGrid
+from raycasting import raycast_beam_walls
 from visualisation_experiments import (
-    append_limited, draw_polyline, draw_dotted_polyline,
-    draw_covariance_ellipse, draw_estimated_robot, draw_hud,
-    ORANGE, LIGHT_PURPLE
+    LIGHT_PURPLE,
+    ORANGE,
+    append_limited,
+    draw_covariance_ellipse,
+    draw_dotted_polyline,
+    draw_estimated_robot,
+    draw_hud,
+    draw_polyline,
 )
 
-# --- Configuration ---
-WIDTH, HEIGHT  = 900, 700
-ROBOT_RADIUS   = 20
-SENSOR_COUNT   = 12
-SENSOR_LIMIT   = 200
 
-# Grid-based raycasting configuration
-GRID_CELL_SIZE = 10  # pixels per grid cell
-GRID_WIDTH     = WIDTH // GRID_CELL_SIZE    # 90 cells
-GRID_HEIGHT    = HEIGHT // GRID_CELL_SIZE   # 70 cells
-RAYCAST_BEAMS  = 36  # beams for 360° scan (10° spacing)
-RAYCAST_RANGE  = 250  # max range in pixels
+WIDTH, HEIGHT = 900, 700
+ROBOT_RADIUS = 20
+SENSOR_COUNT = 12
+SENSOR_LIMIT = 200
+DEFAULT_RAYCAST_BEAMS = 36
+DEFAULT_RAYCAST_RANGE = 250
+START_POSE = (120, 120, 0.0)
 
 WHITE = (255, 255, 255)
-BLACK = (0,   0,   0  )
-BLUE  = (0,   0,   215)
-GRAY  = (200, 200, 200)
-LIGHT_GREEN = (144, 238, 144)  # Free cells
-DARK_RED = (139, 0, 0)         # Occupied cells
+BLACK = (0, 0, 0)
+BLUE = (0, 0, 215)
+GRAY = (200, 200, 200)
+MOVING_OBSTACLE_COLOR = (30, 120, 225)
+
+
+@dataclass(frozen=True)
+class ExperimentConfig:
+    name: str
+    resolution: int
+    localization_mode: str
+    scenario: str
+
+
+EXPERIMENT_PRESETS = {
+    "baseline": ExperimentConfig(
+        name="baseline", resolution=10, localization_mode="ekf", scenario="static"
+    ),
+    "fine_grid": ExperimentConfig(
+        name="fine_grid", resolution=5, localization_mode="ekf", scenario="static"
+    ),
+    "odometry_only": ExperimentConfig(
+        name="odometry_only", resolution=10, localization_mode="odometry", scenario="static"
+    ),
+    "dynamic": ExperimentConfig(
+        name="dynamic", resolution=10, localization_mode="ekf", scenario="dynamic"
+    ),
+}
+
 
 class CleaningRobot:
     def __init__(self, x, y):
         self.x, self.y = x, y
         self.theta = 0.0
-        self.v     = 0.0
+        self.v = 0.0
         self.omega = 0.0
 
     def update(self, dt):
         if abs(self.omega) > 0.001:
-            ratio      = self.v / self.omega
-            self.x    += -ratio * math.sin(self.theta) + ratio * math.sin(self.theta + self.omega * dt)
-            self.y    +=  ratio * math.cos(self.theta) - ratio * math.cos(self.theta + self.omega * dt)
+            ratio = self.v / self.omega
+            self.x += -ratio * math.sin(self.theta) + ratio * math.sin(self.theta + self.omega * dt)
+            self.y += ratio * math.cos(self.theta) - ratio * math.cos(self.theta + self.omega * dt)
             self.theta += self.omega * dt
         else:
-            self.x    += self.v * math.cos(self.theta) * dt
-            self.y    += self.v * math.sin(self.theta) * dt
-        self.theta = math.atan2(math.sin(self.theta), math.cos(self.theta))
+            self.x += self.v * math.cos(self.theta) * dt
+            self.y += self.v * math.sin(self.theta) * dt
+        self.theta = normalize_angle(self.theta)
 
     def get_readings(self, walls):
         readings = []
         for i in range(SENSOR_COUNT):
-            angle    = self.theta + math.radians(i * 30)
+            angle = self.theta + math.radians(i * 30)
             min_dist = SENSOR_LIMIT
             for wall in walls:
                 d = self._cast_ray(angle, wall)
@@ -63,9 +91,10 @@ class CleaningRobot:
         return readings
 
     def _cast_ray(self, angle, wall):
-        x1, y1 = wall[0]; x2, y2 = wall[1]
-        dx, dy  = math.cos(angle), math.sin(angle)
-        denom   = (y2 - y1) * dx - (x2 - x1) * dy
+        x1, y1 = wall[0]
+        x2, y2 = wall[1]
+        dx, dy = math.cos(angle), math.sin(angle)
+        denom = (y2 - y1) * dx - (x2 - x1) * dy
         if abs(denom) < 1e-6:
             return None
         ua = ((x2 - x1) * (self.y - y1) - (y2 - y1) * (self.x - x1)) / denom
@@ -74,31 +103,143 @@ class CleaningRobot:
 
     def handle_collision(self, walls):
         for wall in walls:
-            x1, y1 = wall[0]; x2, y2 = wall[1]
-            dx, dy  = x2 - x1, y2 - y1
+            x1, y1 = wall[0]
+            x2, y2 = wall[1]
+            dx, dy = x2 - x1, y2 - y1
             length_sq = dx**2 + dy**2
             if length_sq == 0:
                 continue
-            t        = max(0, min(1, ((self.x - x1)*dx + (self.y - y1)*dy) / length_sq))
-            cx, cy   = x1 + t*dx, y1 + t*dy
-            dist     = math.hypot(self.x - cx, self.y - cy)
+            t = max(0, min(1, ((self.x - x1) * dx + (self.y - y1) * dy) / length_sq))
+            cx, cy = x1 + t * dx, y1 + t * dy
+            dist = math.hypot(self.x - cx, self.y - cy)
             if 0 < dist < ROBOT_RADIUS:
-                overlap   = ROBOT_RADIUS - dist
-                self.x   += ((self.x - cx) / dist) * overlap
-                self.y   += ((self.y - cy) / dist) * overlap
+                overlap = ROBOT_RADIUS - dist
+                self.x += ((self.x - cx) / dist) * overlap
+                self.y += ((self.y - cy) / dist) * overlap
 
     def draw(self, screen, readings, font):
         pygame.draw.circle(screen, GRAY, (int(self.x), int(self.y)), ROBOT_RADIUS)
-        pygame.draw.line(screen, BLACK,
-                         (self.x, self.y),
-                         (self.x + ROBOT_RADIUS * math.cos(self.theta),
-                          self.y + ROBOT_RADIUS * math.sin(self.theta)), 3)
+        pygame.draw.line(
+            screen,
+            BLACK,
+            (self.x, self.y),
+            (
+                self.x + ROBOT_RADIUS * math.cos(self.theta),
+                self.y + ROBOT_RADIUS * math.sin(self.theta),
+            ),
+            3,
+        )
         for i, dist in enumerate(readings):
             angle = self.theta + math.radians(i * 30)
             tx = self.x + (ROBOT_RADIUS + 25) * math.cos(angle)
             ty = self.y + (ROBOT_RADIUS + 25) * math.sin(angle)
             txt = font.render(str(dist), True, BLACK)
             screen.blit(txt, txt.get_rect(center=(tx, ty)))
+
+
+class MovingObstacle:
+    """Simple dynamic rectangle used for the dynamic-environment experiment."""
+
+    def __init__(self, x, y, width, height, velocity, min_x, max_x):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.velocity = velocity
+        self.min_x = min_x
+        self.max_x = max_x
+
+    def update(self, dt):
+        self.x += self.velocity * dt
+        if self.x < self.min_x:
+            self.x = self.min_x
+            self.velocity *= -1
+        elif self.x + self.width > self.max_x:
+            self.x = self.max_x - self.width
+            self.velocity *= -1
+
+    def segments(self):
+        x0 = self.x
+        x1 = self.x + self.width
+        y0 = self.y
+        y1 = self.y + self.height
+        return [
+            ((x0, y0), (x1, y0)),
+            ((x1, y0), (x1, y1)),
+            ((x1, y1), (x0, y1)),
+            ((x0, y1), (x0, y0)),
+        ]
+
+    def draw(self, screen):
+        pygame.draw.rect(
+            screen,
+            MOVING_OBSTACLE_COLOR,
+            pygame.Rect(int(self.x), int(self.y), int(self.width), int(self.height)),
+            2,
+        )
+
+
+def normalize_angle(angle):
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def integrate_unicycle_pose(pose, v, omega, dt):
+    x, y, theta = pose
+    if abs(omega) > 1e-3:
+        ratio = v / omega
+        x += -ratio * math.sin(theta) + ratio * math.sin(theta + omega * dt)
+        y += ratio * math.cos(theta) - ratio * math.cos(theta + omega * dt)
+        theta += omega * dt
+    else:
+        x += v * math.cos(theta) * dt
+        y += v * math.sin(theta) * dt
+    return np.array([x, y, normalize_angle(theta)], dtype=float)
+
+
+def build_environment_landmarks():
+    return {
+        1: (150, 150),
+        2: (600, 150),
+        3: (250, 400),
+        4: (750, 400),
+        5: (430, 280),
+        6: (700, 580),
+    }
+
+
+def build_static_walls():
+    return [
+        ((50, 50), (850, 50)),
+        ((50, 650), (850, 650)),
+        ((50, 50), (50, 650)),
+        ((850, 50), (850, 650)),
+        ((400, 50), (400, 250)),
+        ((400, 310), (400, 650)),
+        ((400, 320), (600, 320)),
+        ((660, 320), (850, 320)),
+        ((700, 50), (700, 150)),
+        ((700, 210), (700, 320)),
+        ((400, 480), (500, 480)),
+        ((560, 480), (650, 480)),
+        ((710, 480), (850, 480)),
+        ((650, 480), (650, 530)),
+        ((650, 590), (650, 650)),
+    ]
+
+
+def build_dynamic_obstacles(scenario):
+    if scenario != "dynamic":
+        return []
+    return [
+        MovingObstacle(x=470, y=360, width=80, height=40, velocity=90, min_x=430, max_x=760),
+    ]
+
+
+def collect_walls(static_walls, dynamic_obstacles):
+    walls = list(static_walls)
+    for obstacle in dynamic_obstacles:
+        walls.extend(obstacle.segments())
+    return walls
 
 
 def _segments_intersect(ax, ay, bx, by, cx, cy, dx, dy):
@@ -109,12 +250,15 @@ def _segments_intersect(ax, ay, bx, by, cx, cy, dx, dy):
     u = ((ax - bx) * (ay - cy) - (ay - by) * (ax - cx)) / denom
     return 0 < t < 1 and 0 < u < 1
 
+
 def has_line_of_sight(robot_x, robot_y, lx, ly, walls):
     for wall in walls:
-        x1, y1 = wall[0]; x2, y2 = wall[1]
+        x1, y1 = wall[0]
+        x2, y2 = wall[1]
         if _segments_intersect(robot_x, robot_y, lx, ly, x1, y1, x2, y2):
             return False
     return True
+
 
 def filter_by_line_of_sight(measurements, robot_x, robot_y, landmarks, walls):
     return [
@@ -123,170 +267,247 @@ def filter_by_line_of_sight(measurements, robot_x, robot_y, landmarks, walls):
         if has_line_of_sight(robot_x, robot_y, *landmarks[l_id], walls)
     ]
 
+
+def clamp_pose_to_world(pose):
+    pose = pose.copy()
+    pose[0] = min(max(pose[0], 0.0), WIDTH - 1.0)
+    pose[1] = min(max(pose[1], 0.0), HEIGHT - 1.0)
+    pose[2] = normalize_angle(pose[2])
+    return pose
+
+
+def build_config(args):
+    preset = EXPERIMENT_PRESETS[args.experiment]
+    return ExperimentConfig(
+        name=args.experiment,
+        resolution=args.resolution or preset.resolution,
+        localization_mode=args.localization or preset.localization_mode,
+        scenario=args.scenario or preset.scenario,
+    )
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Occupancy-grid SLAM integration with EKF and experiment presets."
+    )
+    parser.add_argument(
+        "--experiment",
+        choices=sorted(EXPERIMENT_PRESETS.keys()),
+        default="baseline",
+        help="Predefined experiment preset for the assignment.",
+    )
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        help="Grid cell size in pixels. Overrides the preset if provided.",
+    )
+    parser.add_argument(
+        "--localization",
+        choices=("ekf", "odometry", "groundtruth"),
+        help="Localization source used by the mapper and trajectory display.",
+    )
+    parser.add_argument(
+        "--scenario",
+        choices=("static", "dynamic"),
+        help="Environment type. 'dynamic' adds a moving obstacle.",
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=None,
+        help="Optional number of simulation steps before auto-exit.",
+    )
+    parser.add_argument(
+        "--beams",
+        type=int,
+        default=DEFAULT_RAYCAST_BEAMS,
+        help="Number of beams in the 360-degree scan.",
+    )
+    parser.add_argument(
+        "--range",
+        type=float,
+        default=DEFAULT_RAYCAST_RANGE,
+        dest="sensor_range",
+        help="Maximum raycast range in pixels.",
+    )
+    parser.add_argument(
+        "--hide-grid",
+        action="store_true",
+        help="Disable occupancy-grid rendering to compare performance.",
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    config = build_config(args)
+
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("Cleaning Robot - EKF Localisation")
-    font  = pygame.font.SysFont("Arial", 14)
+    pygame.display.set_caption("Cleaning Robot - SLAM Experiment Runner")
+    font = pygame.font.SysFont("Arial", 14)
     clock = pygame.time.Clock()
 
-    robot = CleaningRobot(150, 150)
+    grid_width = WIDTH // config.resolution
+    grid_height = HEIGHT // config.resolution
 
-    environment_landmarks = {
-        1: (150, 150),
-        2: (600, 150),
-        3: (250, 400),
-        4: (750, 400),
-        5: (430, 280),
-        6: (700, 580),
-    }
+    robot = CleaningRobot(START_POSE[0], START_POSE[1])
+    robot.theta = START_POSE[2]
+    odometry_pose = np.array([robot.x, robot.y, robot.theta], dtype=float)
 
+    environment_landmarks = build_environment_landmarks()
     landmark_sensor = LandmarkSensor(environment_landmarks)
-
     ekf = EKF(
         initial_pose=[robot.x, robot.y, robot.theta],
         Q=np.diag([0.1, 0.1, 0.05]),
-        R=np.diag([10.0, 0.1])
+        R=np.diag([10.0, 0.1]),
     )
+    grid = OccupancyGrid(WIDTH, HEIGHT, config.resolution)
 
-    # Initialize occupancy grid (Person 1's class — log-odds representation)
-    # All cells start at log-odds 0.0  ==  probability 0.5 (unknown)
-    grid = OccupancyGrid(WIDTH, HEIGHT, GRID_CELL_SIZE)
+    static_walls = build_static_walls()
+    dynamic_obstacles = build_dynamic_obstacles(config.scenario)
 
-    walls = [
-        ((50, 50),   (850, 50)),
-        ((50, 650),  (850, 650)),
-        ((50, 50),   (50, 650)),
-        ((850, 50),  (850, 650)),
-        ((400, 50),  (400, 250)),
-        ((400, 310), (400, 650)),
-        ((400, 320), (600, 320)),
-        ((660, 320), (850, 320)),
-        ((700, 50),  (700, 150)),
-        ((700, 210), (700, 320)),
-        ((400, 480), (500, 480)),
-        ((560, 480), (650, 480)),
-        ((710, 480), (850, 480)),
-        ((650, 480), (650, 530)),
-        ((650, 590), (650, 650)),
-    ]
-
-    actual_trajectory    = []
-    estimated_trajectory = []
+    actual_trajectory = []
+    localized_trajectory = []
+    frame_count = 0
+    cumulative_error = 0.0
+    peak_error = 0.0
 
     while True:
         dt = clock.tick(60) / 1000.0
+        frame_count += 1
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 return
 
-        keys        = pygame.key.get_pressed()
-        robot.v     = (keys[pygame.K_UP]    - keys[pygame.K_DOWN])  * 150
-        robot.omega = (keys[pygame.K_RIGHT] - keys[pygame.K_LEFT])  * 4
+        keys = pygame.key.get_pressed()
+        robot.v = (keys[pygame.K_UP] - keys[pygame.K_DOWN]) * 150
+        robot.omega = (keys[pygame.K_RIGHT] - keys[pygame.K_LEFT]) * 4
+
+        for obstacle in dynamic_obstacles:
+            obstacle.update(dt)
+        walls = collect_walls(static_walls, dynamic_obstacles)
 
         robot.update(dt)
         robot.handle_collision(walls)
+        odometry_pose = integrate_unicycle_pose(odometry_pose, robot.v, robot.omega, dt)
 
-        # Sensor readings
-        readings         = robot.get_readings(walls)
+        readings = robot.get_readings(walls)
         raw_measurements = landmark_sensor.get_readings(
-            robot.x, robot.y, robot.theta,
-            std_range=2.0, std_bearing=0.05
+            robot.x,
+            robot.y,
+            robot.theta,
+            std_range=2.0,
+            std_bearing=0.05,
         )
         measurements = filter_by_line_of_sight(
-            raw_measurements, robot.x, robot.y,
-            environment_landmarks, walls
+            raw_measurements, robot.x, robot.y, environment_landmarks, walls
         )
 
+        if config.localization_mode == "ekf":
+            ekf.predict(robot.v, robot.omega, dt)
+            for l_id, noisy_range, noisy_bearing in measurements:
+                ekf.update([noisy_range, noisy_bearing], environment_landmarks[l_id])
+            localized_pose = ekf.get_pose()
+            cov = ekf.get_position_covariance()
+        elif config.localization_mode == "odometry":
+            localized_pose = odometry_pose.copy()
+            cov = np.eye(2) * 4.0
+        else:
+            localized_pose = np.array([robot.x, robot.y, robot.theta], dtype=float)
+            cov = np.eye(2)
+
+        localized_pose = clamp_pose_to_world(localized_pose)
+
+        # The grid is updated from the active localization estimate, not the
+        # simulator ground truth, so mapping and localization now run as SLAM.
         all_free = set()
         all_occupied = set()
-        angle_step = 2 * math.pi / RAYCAST_BEAMS
+        angle_step = 2 * math.pi / args.beams
 
-        for i in range(RAYCAST_BEAMS):
-            angle = robot.theta + i * angle_step
+        for i in range(args.beams):
+            angle = localized_pose[2] + i * angle_step
             free, occ = raycast_beam_walls(
-                robot.x, robot.y,
+                localized_pose[0],
+                localized_pose[1],
                 angle,
-                RAYCAST_RANGE,
-                GRID_CELL_SIZE,
-                GRID_WIDTH, GRID_HEIGHT,
-                walls
+                args.sensor_range,
+                config.resolution,
+                grid_width,
+                grid_height,
+                walls,
             )
             all_free.update(free)
             if occ is not None:
                 all_occupied.add(occ)
-        
-        # Apply the log-odds occupancy update rule from Person 1's class.
-        # This implements the recursive update from the assignment slides:
-        #     l_t,i = l_t-1,i + inverse_sensor_model(m_i, x_t, z_t) - l_0
-        # update_cell handles bounds-checking and the log-odds increments
-        # (l_free - l_prior for free cells, l_occ - l_prior for occupied cells).
+
         for row, col in all_free:
             grid.update_cell(col, row, is_occupied=False)
-
         for row, col in all_occupied:
             grid.update_cell(col, row, is_occupied=True)
 
-        # EKF
-        ekf.predict(robot.v, robot.omega, dt)
-        for l_id, noisy_range, noisy_bearing in measurements:
-            ekf.update([noisy_range, noisy_bearing], environment_landmarks[l_id])
+        append_limited(actual_trajectory, (robot.x, robot.y))
+        append_limited(localized_trajectory, (localized_pose[0], localized_pose[1]))
 
-        estimated_pose = ekf.get_pose()
-        cov            = ekf.get_position_covariance()
+        error = math.hypot(robot.x - localized_pose[0], robot.y - localized_pose[1])
+        cumulative_error += error
+        peak_error = max(peak_error, error)
 
-        # Record trajectories
-        append_limited(actual_trajectory,    (robot.x,          robot.y))
-        append_limited(estimated_trajectory, (estimated_pose[0], estimated_pose[1]))
-
-        # --- Draw ---
         screen.fill(WHITE)
 
-        # Draw occupancy grid (optional: set to False to disable)
-        # Per the slides: White = Free, Black = Occupied, Gray = Unknown (0.5).
-        # We pull the probability grid from Person 1's class (which converts
-        # log-odds back to [0, 1] probabilities) and render each cell in grayscale.
-        DRAW_OCCUPANCY_GRID = True
-        if DRAW_OCCUPANCY_GRID:
+        if not args.hide_grid:
             prob_grid = grid.get_probability_grid()
-            for row in range(GRID_HEIGHT):
-                for col in range(GRID_WIDTH):
+            for row in range(grid_height):
+                for col in range(grid_width):
                     p = prob_grid[row, col]
-                    # Skip drawing for cells that are still unknown (~0.5)
-                    # to keep the background white and reduce flicker.
                     if abs(p - 0.5) < 0.05:
                         continue
-                    # Map probability -> shade. p=0 -> white (255), p=1 -> black (0).
                     shade = int(255 * (1.0 - p))
-                    cell_x = col * GRID_CELL_SIZE
-                    cell_y = row * GRID_CELL_SIZE
+                    cell_x = col * config.resolution
+                    cell_y = row * config.resolution
                     if p > 0.5:
-                        # Occupied: keep the dramatic dark-red so walls pop.
                         red = max(60, shade)
-                        pygame.draw.rect(screen, (139, red // 3, red // 3),
-                                         (cell_x, cell_y, GRID_CELL_SIZE, GRID_CELL_SIZE))
+                        pygame.draw.rect(
+                            screen,
+                            (139, red // 3, red // 3),
+                            (cell_x, cell_y, config.resolution, config.resolution),
+                        )
                     else:
-                        # Free space: light gray fading to white.
-                        pygame.draw.rect(screen, (shade, shade, shade),
-                                         (cell_x, cell_y, GRID_CELL_SIZE, GRID_CELL_SIZE))
+                        pygame.draw.rect(
+                            screen,
+                            (shade, shade, shade),
+                            (cell_x, cell_y, config.resolution, config.resolution),
+                        )
 
-        for wall in walls:
+        for wall in static_walls:
             pygame.draw.line(screen, BLUE, wall[0], wall[1], 4)
+        for obstacle in dynamic_obstacles:
+            obstacle.draw(screen)
 
-        draw_polyline(screen,        actual_trajectory,    ORANGE, 3)
-        draw_dotted_polyline(screen, estimated_trajectory, (105, 80, 180), 2)
-        draw_covariance_ellipse(screen, estimated_pose[:2], cov, LIGHT_PURPLE)
+        draw_polyline(screen, actual_trajectory, ORANGE, 3)
+        draw_dotted_polyline(screen, localized_trajectory, (105, 80, 180), 2)
+        draw_covariance_ellipse(screen, localized_pose[:2], cov, LIGHT_PURPLE)
 
         landmark_sensor.draw(screen, robot.x, robot.y, measurements)
         robot.draw(screen, readings, font)
-        draw_estimated_robot(screen, estimated_pose)
+        draw_estimated_robot(screen, localized_pose)
 
-        error = math.hypot(robot.x - estimated_pose[0], robot.y - estimated_pose[1])
-        draw_hud(screen, font, robot.v, robot.omega, error)
+        hud_lines = [
+            f"experiment: {config.name}",
+            f"mode: {config.localization_mode}",
+            f"scenario: {config.scenario}",
+            f"resolution: {config.resolution}px | beams: {args.beams} | range: {int(args.sensor_range)}px",
+            f"visible landmarks: {len(measurements)} | avg error: {cumulative_error / frame_count:.1f}px | peak: {peak_error:.1f}px",
+        ]
+        draw_hud(screen, font, robot.v, robot.omega, error, hud_lines)
 
         pygame.display.flip()
+
+        if args.steps is not None and frame_count >= args.steps:
+            pygame.quit()
+            return
 
 
 if __name__ == "__main__":
