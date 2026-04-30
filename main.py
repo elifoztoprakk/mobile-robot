@@ -462,11 +462,22 @@ def main():
             for row in range(grid_height):
                 for col in range(grid_width):
                     p = prob_grid[row, col]
-                    if abs(p - 0.5) < 0.05:
-                        continue
+                    
+
                     shade = int(255 * (1.0 - p))
                     cell_x = col * config.resolution
                     cell_y = row * config.resolution
+
+                    shade = int(255 * (1.0 - p))
+                    color = (shade, shade, shade)
+                    pygame.draw.rect(
+                        screen,
+                        color,
+                        (
+                            cell_x,cell_y, config.resolution, config.resolution
+                        ),
+                    )
+                    
                     if p > 0.5:
                         red = max(60, shade)
                         pygame.draw.rect(
