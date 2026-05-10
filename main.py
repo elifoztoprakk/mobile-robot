@@ -178,6 +178,52 @@ class MovingObstacle:
             2,
         )
 
+class DynamicDoor:
+    """A dynamic door that periodically opens and closes. When closed, it behaves like a wall, when closed the door step has no obstacles. It is used for testing SLAM in changing environments."""
+
+    def __init__(self, x1, y1, x2, y2, open_time, close_time):
+        self.x1 = x1
+        self.y1 = y1
+        self.x2 = x2
+        self.y2 = y2
+
+        self.open_time = open_time
+        self.close_time = close_time
+        self.timer = 0.0
+        self.is_open = False
+
+    def update(self, dt):
+        self.timer += dt
+        if self.is_open and self.timer >= self.open_time:
+            self.is_open = False
+            self.timer = 0.0
+        elif not self.is_open and self.timer >= self.close_time:
+            self.is_open = True
+            self.timer = 0.0
+
+    def segments(self):
+        if self.is_open:
+            return []
+        x1 = self.x1
+        x2 = self.x2
+        y1 = self.y1
+        y2 = self.y2
+        return [
+            ((x1, y1), (x2, y2)),
+        ]
+
+    def draw(self, screen):
+        if self.is_open:
+            return
+        
+        color = (200, 50, 50) 
+        pygame.draw.line(
+            screen,
+            color,
+            (int(self.x1), int(self.y1)), 
+            (int(self.x2), int(self.y2)),
+            6,
+        )
 
 def normalize_angle(angle):
     return math.atan2(math.sin(angle), math.cos(angle))
@@ -226,6 +272,19 @@ def build_static_walls():
         ((650, 590), (650, 650)),
     ]
 
+
+def build_dynamic_doors(scenario): ##def __init__(self, x1, y1, x2, y2, open_time, close_time, name):
+    if scenario != "dynamic":
+        return []
+    # Default values for doors. They will open and close every 5 seconds, creating a changing environment for the SLAM algorithm to handle. The "living_room" door blocks the main path between the starting area and the rest of the environment, while the "bathroom" and "sleeping_to_bathroom" doors create additional dynamic obstacles in the corridor and bathroom areas.
+    return {
+        "living_room":DynamicDoor(400, 250, 400, 310, open_time=5.0, close_time=5.0), 
+        "bathroom":DynamicDoor(500, 480, 560, 480, open_time=5.0, close_time=5.0),
+        "sleeping_to_bathroom":DynamicDoor(650, 530, 650, 590, open_time=5.0, close_time=5.0), 
+        "corridor":DynamicDoor(650, 480, 710, 480, open_time=5.0, close_time=5.0), 
+        "kitchen":DynamicDoor(600, 320, 660, 320, open_time=5.0, close_time=5.0), 
+        "pantry":DynamicDoor(700, 210, 700, 320, open_time=5.0, close_time=5.0),
+    }
 
 def build_dynamic_obstacles(scenario):
     if scenario != "dynamic":
@@ -366,6 +425,7 @@ def main():
 
     static_walls = build_static_walls()
     dynamic_obstacles = build_dynamic_obstacles(config.scenario)
+    dynamic_doors = build_dynamic_doors(config.scenario)
 
     actual_trajectory = []
     localized_trajectory = []
@@ -389,6 +449,10 @@ def main():
         for obstacle in dynamic_obstacles:
             obstacle.update(dt)
         walls = collect_walls(static_walls, dynamic_obstacles)
+
+        for door in dynamic_doors.values():
+            door.update(dt)
+            walls.extend(door.segments())
 
         robot.update(dt)
         robot.handle_collision(walls)
@@ -496,6 +560,8 @@ def main():
             pygame.draw.line(screen, BLUE, wall[0], wall[1], 4)
         for obstacle in dynamic_obstacles:
             obstacle.draw(screen)
+        for door in dynamic_doors.values():
+            door.draw(screen)
 
         draw_polyline(screen, actual_trajectory, ORANGE, 3)
         draw_dotted_polyline(screen, localized_trajectory, (105, 80, 180), 2)
