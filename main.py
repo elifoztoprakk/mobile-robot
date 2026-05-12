@@ -275,7 +275,7 @@ def build_static_walls():
 
 def build_dynamic_doors(scenario): ##def __init__(self, x1, y1, x2, y2, open_time, close_time, name):
     if scenario != "dynamic":
-        return []
+        return {}
     # Default values for doors. They will open and close every 5 seconds, creating a changing environment for the SLAM algorithm to handle. The "living_room" door blocks the main path between the starting area and the rest of the environment, while the "bathroom" and "sleeping_to_bathroom" doors create additional dynamic obstacles in the corridor and bathroom areas.
     return {
         "living_room":DynamicDoor(400, 250, 400, 310, open_time=5.0, close_time=5.0), 
