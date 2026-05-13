@@ -68,14 +68,14 @@ def draw_covariance_ellipse(screen, mean, covariance, color, scale=2.0):
     screen.blit(rotated, rotated_rect)
 
 
-def draw_estimated_robot(screen, estimated_pose):
+def draw_estimated_robot(screen, estimated_pose, color):
     """Draw the estimated robot position as a purple circle with heading."""
     pygame.draw.circle(
-        screen, PURPLE,
+        screen, color,
         (int(estimated_pose[0]), int(estimated_pose[1])), 7, 2
     )
     pygame.draw.line(
-        screen, PURPLE,
+        screen, color,
         (estimated_pose[0], estimated_pose[1]),
         (
             estimated_pose[0] + 22 * math.cos(estimated_pose[2]),
