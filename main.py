@@ -6,6 +6,7 @@ import numpy as np
 import pygame
 
 from ekf import EKF
+from autonomy import AutonomousController, GoalTracker
 from landmarks import LandmarkSensor
 from occupancy_grid import OccupancyGrid
 from raycasting import raycast_beam_walls
@@ -433,6 +434,10 @@ def main():
     cumulative_error = 0.0
     peak_error = 0.0
 
+   
+    robot_brain = AutonomousController(danger_threshold=55.0, forward_speed=60.0)
+    mission_goal = GoalTracker(target_coverage=0.35) 
+    
     while True:
         dt = clock.tick(60) / 1000.0
         frame_count += 1
@@ -442,9 +447,24 @@ def main():
                 pygame.quit()
                 return
 
-        keys = pygame.key.get_pressed()
-        robot.v = (keys[pygame.K_UP] - keys[pygame.K_DOWN]) * 150
-        robot.omega = (keys[pygame.K_RIGHT] - keys[pygame.K_LEFT]) * 4
+        # keys = pygame.key.get_pressed()
+        # robot.v = (keys[pygame.K_UP] - keys[pygame.K_DOWN]) * 150
+        # robot.omega = (keys[pygame.K_RIGHT] - keys[pygame.K_LEFT]) * 4
+
+        #  AUTONOMOUS BEHAVIOR 
+        if not mission_goal.is_reached:
+
+            cmd_v, cmd_omega = robot_brain.get_command(readings)
+            robot.v = cmd_v
+            robot.omega = cmd_omega
+            
+
+            goal_reached, current_coverage = mission_goal.check_goal(my_map)
+            
+            if goal_reached:
+                print(f"MISSION ACCOMPLISHED! Coverage: {current_coverage*100:.1f}%")
+                robot.v = 0
+                robot.omega = 0
 
         for obstacle in dynamic_obstacles:
             obstacle.update(dt)
