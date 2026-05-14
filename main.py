@@ -23,6 +23,8 @@ from visualisation_experiments import (
 
 
 WIDTH, HEIGHT = 900, 700
+SIDEBAR_WIDTH = 250  
+TOTAL_WIDTH = WIDTH + SIDEBAR_WIDTH
 ROBOT_RADIUS = 20
 SENSOR_COUNT = 12
 SENSOR_LIMIT = 200
@@ -403,7 +405,8 @@ def main():
     config = build_config(args)
 
     pygame.init()
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    # Use TOTAL_WIDTH instead of WIDTH
+    screen = pygame.display.set_mode((TOTAL_WIDTH, HEIGHT)) 
     pygame.display.set_caption("Cleaning Robot - SLAM Experiment Runner")
     font = pygame.font.SysFont("Arial", 14)
     clock = pygame.time.Clock()
@@ -447,25 +450,7 @@ def main():
                 pygame.quit()
                 return
 
-        # keys = pygame.key.get_pressed()
-        # robot.v = (keys[pygame.K_UP] - keys[pygame.K_DOWN]) * 150
-        # robot.omega = (keys[pygame.K_RIGHT] - keys[pygame.K_LEFT]) * 4
-
-        #  AUTONOMOUS BEHAVIOR 
-        if not mission_goal.is_reached:
-
-            cmd_v, cmd_omega = robot_brain.get_command(readings)
-            robot.v = cmd_v
-            robot.omega = cmd_omega
-            
-
-            goal_reached, current_coverage = mission_goal.check_goal(my_map)
-            
-            if goal_reached:
-                print(f"MISSION ACCOMPLISHED! Coverage: {current_coverage*100:.1f}%")
-                robot.v = 0
-                robot.omega = 0
-
+        # ── update dynamic environment ────────────────────────────────────
         for obstacle in dynamic_obstacles:
             obstacle.update(dt)
         walls = collect_walls(static_walls, dynamic_obstacles)
@@ -474,11 +459,29 @@ def main():
             door.update(dt)
             walls.extend(door.segments())
 
+        # ── sensor readings (needed by autonomous controller) ─────────────
+        readings = robot.get_readings(walls)
+
+        # ── autonomous behaviour (Person 3) ───────────────────────────────
+        # readings and grid are now defined, so the controller and goal
+        # tracker can be called safely.
+        if not mission_goal.is_reached:
+            cmd_v, cmd_omega = robot_brain.get_command(readings)
+            robot.v = cmd_v
+            robot.omega = cmd_omega
+
+            goal_reached, current_coverage = mission_goal.check_goal(grid)
+            if goal_reached:
+                print(f"Goal reached! Coverage: {current_coverage:.2%}")
+                robot.v = 0
+                robot.omega = 0
+
         robot.update(dt)
         robot.handle_collision(walls)
         odometry_pose = integrate_unicycle_pose(odometry_pose, robot.v, robot.omega, dt)
 
-        readings = robot.get_readings(walls)
+        # readings already computed above — kept here so the rest of the
+        # loop (landmark sensor, HUD) can reference the same variable.
         raw_measurements = landmark_sensor.get_readings(
             robot.x,
             robot.y,
@@ -589,7 +592,7 @@ def main():
 
         landmark_sensor.draw(screen, robot.x, robot.y, measurements)
         robot.draw(screen, readings, font)
-        draw_estimated_robot(screen, localized_pose)
+        draw_estimated_robot(screen, localized_pose, LIGHT_PURPLE)
 
         hud_lines = [
             f"experiment: {config.name}",
@@ -600,6 +603,43 @@ def main():
         ]
         draw_hud(screen, font, robot.v, robot.omega, error, hud_lines)
 
+        pygame.display.flip()
+        
+        sidebar_rect = pygame.Rect(WIDTH, 0, SIDEBAR_WIDTH, HEIGHT)
+        pygame.draw.rect(screen, (240, 240, 240), sidebar_rect) # Light gray background
+        pygame.draw.line(screen, BLACK, (WIDTH, 0), (WIDTH, HEIGHT), 2) # Border
+
+        # Define the HUD lines
+        hud_lines = [
+            "--- SYSTEM STATUS ---",
+            f"Experiment: {config.name.upper()}",
+            f"Mode: {config.localization_mode}",
+            f"Scenario: {config.scenario}",
+            "",
+            "--- SENSOR DATA ---",
+            f"Res: {config.resolution}px",
+            f"Beams: {args.beams}",
+            f"Range: {int(args.sensor_range)}px",
+            f"Landmarks: {len(measurements)}",
+            "",
+            "--- PERFORMANCE ---",
+            f"V: {robot.v:.1f} | ω: {robot.omega:.2f}",
+            f"Current Error: {error:.1f}px",
+            f"Avg Error: {cumulative_error / frame_count:.1f}px",
+            f"Peak Error: {peak_error:.1f}px",
+            "",
+            "--- MISSION ---",
+            f"Coverage: {current_coverage*100:.1f}%",
+            "Status: " + ("COMPLETE" if mission_goal.is_reached else "CLEANING")
+        ]
+
+        # Render sidebar text
+        for i, line in enumerate(hud_lines):
+            text_surface = font.render(line, True, BLACK)
+            # Offset x by WIDTH + 20 for padding
+            screen.blit(text_surface, (WIDTH + 20, 30 + (i * 25)))
+
+        # 4. Final Flip
         pygame.display.flip()
 
         if args.steps is not None and frame_count >= args.steps:
