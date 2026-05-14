@@ -51,13 +51,13 @@ class GoalTracker:
         self.is_reached = False
 
     def check_goal(self, occupancy_grid):
-      
-        total_cells = occupancy_grid.grid.size
+        if hasattr(occupancy_grid, "get_explored_fraction"):
+            coverage = occupancy_grid.get_explored_fraction()
+        else:
+            total_cells = occupancy_grid.grid.size
+            explored_cells = np.count_nonzero(np.abs(occupancy_grid.grid) > 0.01)
+            coverage = explored_cells / total_cells
 
-        explored_cells = np.count_nonzero(np.abs(occupancy_grid.grid) > 0.01)
-        
-        coverage = explored_cells / total_cells
-        
         if coverage >= self.target_coverage:
             self.is_reached = True
             

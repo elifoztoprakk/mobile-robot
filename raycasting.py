@@ -6,10 +6,11 @@ Implements:
 - Raycasting from a sensor beam
 - 360° omnidirectional scans
 - World-to-grid coordinate conversion
+- Aggregation helpers for multi-robot mapping
 """
 
 import math
-from typing import List, Tuple, Set
+from typing import Dict, Iterable, List, Tuple, Set
 
 
 # ============================================================================
@@ -102,6 +103,94 @@ def raycast_beam_walls(
         occupied_cell = None
 
     return free_cells, occupied_cell
+
+
+def perform_wall_scan(
+    robot_x: float,
+    robot_y: float,
+    robot_theta: float,
+    num_beams: int,
+    max_range: float,
+    cell_size: float,
+    grid_width: int,
+    grid_height: int,
+    walls,
+):
+    """
+    Perform a full wall-based scan for a single robot pose.
+
+    Returns a pair of sets:
+    - free cells traversed by any beam
+    - occupied endpoint cells hit by any beam
+    """
+    free_cells = set()
+    occupied_cells = set()
+    angle_step = 2 * math.pi / num_beams
+
+    for beam_idx in range(num_beams):
+        angle = robot_theta + beam_idx * angle_step
+        beam_free, occupied = raycast_beam_walls(
+            robot_x,
+            robot_y,
+            angle,
+            max_range,
+            cell_size,
+            grid_width,
+            grid_height,
+            walls,
+        )
+        free_cells.update(beam_free)
+        if occupied is not None:
+            occupied_cells.add(occupied)
+
+    return free_cells, occupied_cells
+
+
+def multi_robot_raycast_walls(
+    robot_poses: Dict[object, Iterable[float]],
+    num_beams: int,
+    max_range: float,
+    cell_size: float,
+    grid_width: int,
+    grid_height: int,
+    walls,
+):
+    """
+    Aggregate wall-based scans from multiple robots into one shared observation.
+
+    Returns a dictionary containing per-robot scan outputs as well as merged
+    free/occupied cell sets for shared occupancy-grid updates.
+    """
+    per_robot = {}
+    shared_free = set()
+    shared_occupied = set()
+
+    for robot_id, pose in robot_poses.items():
+        x, y, theta = pose
+        free_cells, occupied_cells = perform_wall_scan(
+            x,
+            y,
+            theta,
+            num_beams,
+            max_range,
+            cell_size,
+            grid_width,
+            grid_height,
+            walls,
+        )
+        per_robot[robot_id] = {
+            "pose": (x, y, theta),
+            "free": free_cells,
+            "occupied": occupied_cells,
+        }
+        shared_free.update(free_cells)
+        shared_occupied.update(occupied_cells)
+
+    return {
+        "per_robot": per_robot,
+        "shared_free": shared_free,
+        "shared_occupied": shared_occupied,
+    }
 
 def grid_to_world(row: int, col: int, cell_size: float) -> Tuple[float, float]:
     """
