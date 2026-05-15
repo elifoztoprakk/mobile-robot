@@ -5,10 +5,11 @@ import math
 def _configure_video_driver():
     current_driver = os.environ.get("SDL_VIDEODRIVER")
     if not current_driver:
-        if os.environ.get("DISPLAY"):
-            os.environ["SDL_VIDEODRIVER"] = "x11"
-        elif os.environ.get("WAYLAND_DISPLAY"):
-            os.environ["SDL_VIDEODRIVER"] = "wayland"
+        if os.name=="posix" and os.uname().sysname == "Linux":
+            if os.environ.get("DISPLAY"):
+                os.environ["SDL_VIDEODRIVER"] = "x11"
+            elif os.environ.get("WAYLAND_DISPLAY"):
+                os.environ["SDL_VIDEODRIVER"] = "wayland"
 
     os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
     os.environ.setdefault("SDL_RENDER_DRIVER", "software")
@@ -153,8 +154,17 @@ def main():
             robot.v, robot.omega = robot_state["brain"].get_command(readings)
             robot.update(dt)
             robot.handle_collision(walls)
-            robot_poses[robot_state["id"]] = (robot.x, robot.y, robot.theta)
+            #robot_poses[robot_state["id"]] = (robot.x, robot.y, robot.theta)
 
+        handle_robot_collisions(robot_states, radius=20)
+
+        robot_poses = {
+            robot_state["id"]: (robot_state["robot"].x, 
+            robot_state["robot"].y, 
+            robot_state["robot"].theta)
+            for robot_state in robot_states
+        }
+        
         mapper.update_from_robots(robot_poses, walls)
         coverage = mapper.get_coverage_stats()["coverage_fraction"]
 
@@ -182,6 +192,30 @@ def main():
     pygame.font.quit()
     pygame.display.quit()
 
+def handle_robot_collisions(robot_states, radius):
+    for i in range(len(robot_states)):
+        for j in range(i + 1, len(robot_states)):
+            r1 = robot_states[i]["robot"]
+            r2 = robot_states[j]["robot"]
+            dx = r2.x - r1.x
+            dy = r2.y - r1.y
+            dist = math.hypot(dx, dy)
+            min_dist = radius * 2
+            if 0< dist < min_dist:
+                overlap = min_dist - dist
+
+                nx = dx/dist
+                ny = dy/dist
+
+                r1.x -= nx*overlap/2
+                r1.y -= ny*overlap/2
+                r2.x += nx*overlap/2
+                r2.y += ny*overlap/2
+                # slow movement down after collision
+                r1.v *= 0.5 
+                r1.omega *= 0.5
+                r2.v *= 0.5
+                r2.omega *= 0.5 
 
 if __name__ == "__main__":
     main()
