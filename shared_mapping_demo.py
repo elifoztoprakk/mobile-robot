@@ -5,10 +5,11 @@ import math
 def _configure_video_driver():
     current_driver = os.environ.get("SDL_VIDEODRIVER")
     if not current_driver:
-        if os.environ.get("DISPLAY"):
-            os.environ["SDL_VIDEODRIVER"] = "x11"
-        elif os.environ.get("WAYLAND_DISPLAY"):
-            os.environ["SDL_VIDEODRIVER"] = "wayland"
+        if os.name=="posix" and os.uname().sysname == "Linux":
+            if os.environ.get("DISPLAY"):
+                os.environ["SDL_VIDEODRIVER"] = "x11"
+            elif os.environ.get("WAYLAND_DISPLAY"):
+                os.environ["SDL_VIDEODRIVER"] = "wayland"
 
     os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
     os.environ.setdefault("SDL_RENDER_DRIVER", "software")
