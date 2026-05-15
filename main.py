@@ -439,7 +439,7 @@ def main():
 
    
     robot_brain = AutonomousController(danger_threshold=55.0, forward_speed=60.0)
-    mission_goal = GoalTracker(target_coverage=0.35) 
+    mission_goal = GoalTracker(target_coverage=0.9) 
     
     while True:
         dt = clock.tick(60) / 1000.0
@@ -593,17 +593,6 @@ def main():
         landmark_sensor.draw(screen, robot.x, robot.y, measurements)
         robot.draw(screen, readings, font)
         draw_estimated_robot(screen, localized_pose, LIGHT_PURPLE)
-
-        hud_lines = [
-            f"experiment: {config.name}",
-            f"mode: {config.localization_mode}",
-            f"scenario: {config.scenario}",
-            f"resolution: {config.resolution}px | beams: {args.beams} | range: {int(args.sensor_range)}px",
-            f"visible landmarks: {len(measurements)} | avg error: {cumulative_error / frame_count:.1f}px | peak: {peak_error:.1f}px",
-        ]
-        draw_hud(screen, font, robot.v, robot.omega, error, hud_lines)
-
-        pygame.display.flip()
         
         sidebar_rect = pygame.Rect(WIDTH, 0, SIDEBAR_WIDTH, HEIGHT)
         pygame.draw.rect(screen, (240, 240, 240), sidebar_rect) # Light gray background
