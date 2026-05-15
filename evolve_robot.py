@@ -1,27 +1,4 @@
-"""
-evolve_robot.py
-===============
-Evolves a NeuralController for the cleaning-robot swarm using the
-(mu+lambda) Evolution Strategy from evolution.py.
 
-How it works
-------------
-Each candidate weight vector is evaluated by running a short headless
-simulation (no display) and measuring:
-  - coverage fraction achieved in SIM_STEPS frames  (+)
-  - number of wall collisions penalised              (-)
-
-The best weights are saved to evolved_weights.npy and can be loaded
-directly by shared_mapping_demo.py.
-
-Usage
------
-    python evolve_robot.py                  # full training run
-    python evolve_robot.py --generations 50 # quick smoke-test
-    python evolve_robot.py --resume         # continue from saved weights
-
-Author: Person 4
-"""
 
 import argparse
 import math

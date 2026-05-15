@@ -1,26 +1,3 @@
-"""
-evolution.py
-============
-(mu + lambda) Evolution Strategy for evolving robot controllers.
-
-A (mu + lambda)-ES works as follows each generation:
-  1. From the mu parents, sample lambda offspring by adding
-     Gaussian noise (sigma * N(0,I)) to a randomly chosen parent.
-  2. Evaluate all mu + lambda individuals.
-  3. Keep the mu best as parents for the next generation.
-
-Sigma (the mutation step size) is adapted using the 1/5-success rule:
-if more than 1/5 of offspring were better than the worst parent,
-increase sigma; otherwise decrease it.  This is the simplest form of
-self-adaptation and is easy to explain in a report.
-
-Also contains:
-  - Rastrigin and Rosenbrock benchmark functions
-  - run_benchmark()  : optimise a benchmark and return a convergence curve
-  - plot_benchmarks(): plot both curves and save to PNG
-
-Author: Person 4
-"""
 
 import math
 import time
