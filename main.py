@@ -10,7 +10,7 @@ from autonomy import AutonomousController, GoalTracker
 from landmarks import LandmarkSensor
 from occupancy_grid import OccupancyGrid
 from raycasting import raycast_beam_walls
-from visualisation_experiments import (
+from visualization_experiments import (
     LIGHT_PURPLE,
     ORANGE,
     append_limited,
@@ -20,6 +20,7 @@ from visualisation_experiments import (
     draw_hud,
     draw_polyline,
 )
+from experiment_logger import ExperimentLogger
 
 
 WIDTH, HEIGHT = 900, 700
@@ -276,17 +277,19 @@ def build_static_walls():
     ]
 
 
-def build_dynamic_doors(scenario): ##def __init__(self, x1, y1, x2, y2, open_time, close_time, name):
+def build_dynamic_doors(scenario, open_time=10.0, close_time=2.0): ##def __init__(self, x1, y1, x2, y2, open_time, close_time, name):
     if scenario != "dynamic":
         return {}
     # Default values for doors. They will open and close every 5 seconds, creating a changing environment for the SLAM algorithm to handle. The "living_room" door blocks the main path between the starting area and the rest of the environment, while the "bathroom" and "sleeping_to_bathroom" doors create additional dynamic obstacles in the corridor and bathroom areas.
+    
     return {
-        "living_room":DynamicDoor(400, 250, 400, 310, open_time=5.0, close_time=5.0), 
-        "bathroom":DynamicDoor(500, 480, 560, 480, open_time=5.0, close_time=5.0),
-        "sleeping_to_bathroom":DynamicDoor(650, 530, 650, 590, open_time=5.0, close_time=5.0), 
-        "corridor":DynamicDoor(650, 480, 710, 480, open_time=5.0, close_time=5.0), 
-        "kitchen":DynamicDoor(600, 320, 660, 320, open_time=5.0, close_time=5.0), 
-        "pantry":DynamicDoor(700, 210, 700, 320, open_time=5.0, close_time=5.0),
+        # experimentws: open_time=5.0, close_time=5.0
+        "living_room":DynamicDoor(400, 250, 400, 310, open_time=open_time, close_time=close_time), 
+        "bathroom":DynamicDoor(500, 480, 560, 480, open_time=open_time, close_time=close_time),
+        "sleeping_to_bathroom":DynamicDoor(650, 530, 650, 590, open_time=open_time, close_time=close_time), 
+        "corridor":DynamicDoor(650, 480, 710, 480, open_time=open_time, close_time=close_time), 
+        "kitchen":DynamicDoor(600, 320, 660, 320, open_time=open_time, close_time=close_time), 
+        "pantry":DynamicDoor(700, 210, 700, 320, open_time=open_time, close_time=close_time),
     }
 
 def build_dynamic_obstacles(scenario):
@@ -404,6 +407,22 @@ def main():
     args = parse_args()
     config = build_config(args)
 
+    logger = ExperimentLogger(
+        experiment_name=f"{config.name}_{config.localization_mode}_{config.scenario}",
+        config={
+            "controller_type": "autonomous",
+            "experiment": config.name,
+            "resolution": config.resolution,
+            "localization_mode": config.localization_mode,
+            "scenario": config.scenario,
+            "beams": args.beams,
+            "steps_limit": args.steps,
+            "start_pose": START_POSE,
+            "raycast_beams": args.beams,
+            "sensor_range": args.sensor_range,
+            "target_coverage": 0.9,
+        },
+    )
     pygame.init()
     # Use TOTAL_WIDTH instead of WIDTH
     screen = pygame.display.set_mode((TOTAL_WIDTH, HEIGHT)) 
@@ -436,6 +455,9 @@ def main():
     frame_count = 0
     cumulative_error = 0.0
     peak_error = 0.0
+    current_coverage = 0.0
+    collision_count = 0
+    previous_door_states = {}
 
    
     robot_brain = AutonomousController(danger_threshold=55.0, forward_speed=60.0)
@@ -447,6 +469,17 @@ def main():
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                logger.save_summary({
+                    "total_frames": frame_count,
+                    "total_time": frame_count * dt,
+                    "final_coverage": current_coverage,
+                    "avg_error": cumulative_error / frame_count,
+                    "peak_error": peak_error,
+                    "collision_count": collision_count, 
+                    "goal_reached": mission_goal.is_reached,
+                    "closed_by_user": True,
+                })
+                logger.close()
                 pygame.quit()
                 return
 
@@ -475,9 +508,22 @@ def main():
                 print(f"Goal reached! Coverage: {current_coverage:.2%}")
                 robot.v = 0
                 robot.omega = 0
-
+        
+        prev_x,prev_y = robot.x, robot.y
         robot.update(dt)
         robot.handle_collision(walls)
+
+        expected_dist = abs(robot.v) * dt
+        actual_dist = math.hypot(robot.x - prev_x, robot.y - prev_y)
+        collision_this_frame = expected_dist > 1.0 and actual_dist < expected_dist * 0.3
+
+        if collision_this_frame:
+            collision_count += 1
+            logger.log_event(frame_count,
+                             frame_count*dt,
+                             "collision", {"frame": frame_count, "x": robot.x, "y": robot.y, 
+                                           "expected_dist": expected_dist, "actual_dist": actual_dist,"v": robot.v, "omega": robot.omega})   
+
         odometry_pose = integrate_unicycle_pose(odometry_pose, robot.v, robot.omega, dt)
 
         # readings already computed above — kept here so the rest of the
@@ -535,12 +581,51 @@ def main():
         for row, col in all_occupied:
             grid.update_cell(col, row, is_occupied=True)
 
+        current_coverage = grid.get_explored_fraction()
+
         append_limited(actual_trajectory, (robot.x, robot.y))
         append_limited(localized_trajectory, (localized_pose[0], localized_pose[1]))
 
         error = math.hypot(robot.x - localized_pose[0], robot.y - localized_pose[1])
         cumulative_error += error
         peak_error = max(peak_error, error)
+
+        door_states ={
+            name:door.is_open for name, door in dynamic_doors.items()
+        }
+
+        for name, is_open in door_states.items():
+            if name in previous_door_states and previous_door_states[name] != is_open:
+                logger.log_event(frame_count,
+                                 frame_count*dt,
+                                 "door_state_change", {"frame": frame_count, "door": name, "is_open": is_open})
+        previous_door_states = door_states.copy()
+
+        if frame_count % 10 == 0:
+            logger.log_step({         
+                "frame_count":frame_count,
+                "timestamp":frame_count * dt,
+                "controller_type":"autonomous",
+                "experiment":config.name,
+                "scenario":config.scenario,
+                "localization_mode": config.localization_mode,
+                "robot_x":robot.x,
+                "robot_y":robot.y,
+                "coverage": current_coverage,
+                "avg_error": cumulative_error / frame_count,
+                "visible_landmarks": len(measurements),
+                "goal_reached": mission_goal.is_reached,
+                "door_states": str(door_states),
+                "robot_theta":robot.theta,
+                "localized_x":localized_pose[0],
+                "localized_y":localized_pose[1],
+                "localized_theta":localized_pose[2],
+                "error":error,
+                "cumulative_error":cumulative_error,
+                "peak_error":peak_error,
+                "current_coverage":current_coverage,
+                "collision_count":collision_count,
+            })
 
         screen.fill(WHITE)
 
@@ -632,6 +717,19 @@ def main():
         pygame.display.flip()
 
         if args.steps is not None and frame_count >= args.steps:
+            logger.save_summary({
+                "total_frames":frame_count,
+                "total_time":frame_count * dt,
+                "avg_error":cumulative_error / frame_count,
+                "peak_error":peak_error,
+                "final_coverage":current_coverage,
+                "collision_count":collision_count,
+                "goal_reached": mission_goal.is_reached,
+                "experiment": config.name,
+                "scenario": config.scenario,
+                "localization_mode": config.localization_mode,
+            })
+            logger.close()
             pygame.quit()
             return
 

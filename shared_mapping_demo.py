@@ -1,6 +1,56 @@
 import os
 import math
+import csv
+from datetime import datetime
+from main import build_static_walls, build_dynamic_doors, CleaningRobot
 
+class SharedMappingExperimentLogger:
+    def __init__(self, experiment_name, output_dir="experiment_logs"):
+        os.makedirs(output_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.path = os.path.join(
+            output_dir,
+            f"{experiment_name}_{timestamp}.csv"
+        )
+
+        self.file = open(self.path, "w", newline="")
+        self.writer = csv.DictWriter(
+            self.file,
+            fieldnames=[
+                "frame",
+                "time",
+                "coverage_percent",
+                "explored_cells",
+                "total_cells",
+                "robot_id",
+                "scan_count",
+                "new_explored_cells",
+            ],
+        )
+        self.writer.writeheader()
+
+    def log_step(self, frame, time, mapper, robot_states):
+        coverage = mapper.get_coverage_stats()
+        per_robot = mapper.get_per_robot_stats()
+
+        for robot_state in robot_states:
+            rid = robot_state["id"]
+            stats = per_robot[rid]
+
+            self.writer.writerow({
+                "frame": frame,
+                "time": time,
+                "coverage_percent": coverage["coverage_percent"],
+                "explored_cells": coverage["explored_cells"],
+                "total_cells": coverage["total_cells"],
+                "robot_id": rid,
+                "scan_count": stats["scan_count"],
+                "new_explored_cells": stats["new_explored_cells"],
+            })
+
+    def close(self):
+        self.file.close()
 
 def _configure_video_driver():
     current_driver = os.environ.get("SDL_VIDEODRIVER")
@@ -21,7 +71,6 @@ _configure_video_driver()
 import pygame
 
 from autonomy import AutonomousController
-from main import CleaningRobot, build_static_walls
 from shared_mapping import SharedOccupancyMapper
 
 
@@ -35,6 +84,8 @@ ROBOT_CONFIGS = [
     {"id": "R1", "color": (220, 80, 80), "start": (120, 120, 0.0)},
     {"id": "R2", "color": (80, 145, 230), "start": (280, 180, 0.7)},
     {"id": "R3", "color": (60, 165, 110), "start": (180, 540, -0.4)},
+    {"id": "R4", "color": (70, 185, 110), "start": (520, 140, 1.2)},
+    {"id": "R5", "color": (130, 150, 50), "start": (740, 560, 3.0)},
 ]
 
 GRID_RESOLUTION = 10
@@ -114,7 +165,14 @@ def main():
     font = pygame.font.SysFont("Arial", 16)
     clock = pygame.time.Clock()
 
+    experiment_name = "shared_mapping_3_robots"
+    logger = SharedMappingExperimentLogger(experiment_name)
+    frame_count = 0
+    elapsed_time = 0.0
+    collision_count = 0
+
     walls = build_static_walls()
+    doors = build_dynamic_doors("dynamic")
     mapper = SharedOccupancyMapper(
         width=WIDTH,
         height=HEIGHT,
@@ -142,21 +200,31 @@ def main():
     running = True
     while running:
         dt = clock.tick(60) / 1000.0
+        frame_count += 1
+        elapsed_time += dt
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
 
+        for door in doors.values():
+            door.update(dt)
+
+        active_walls = list(walls )
+
+        for door in doors.values():
+            active_walls.extend(door.segments())
+
         robot_poses = {}
         for robot_state in robot_states:
             robot = robot_state["robot"]
-            readings = robot.get_readings(walls)
+            readings = robot.get_readings(active_walls)
             robot.v, robot.omega = robot_state["brain"].get_command(readings)
             robot.update(dt)
-            robot.handle_collision(walls)
+            robot.handle_collision(active_walls)
             #robot_poses[robot_state["id"]] = (robot.x, robot.y, robot.theta)
 
-        handle_robot_collisions(robot_states, radius=20)
+        collision_count +=handle_robot_collisions(robot_states, radius=20)
 
         robot_poses = {
             robot_state["id"]: (robot_state["robot"].x, 
@@ -164,15 +232,20 @@ def main():
             robot_state["robot"].theta)
             for robot_state in robot_states
         }
-        
-        mapper.update_from_robots(robot_poses, walls)
+
+        mapper.update_from_robots(robot_poses, active_walls)
         coverage = mapper.get_coverage_stats()["coverage_fraction"]
+
+        logger.log_step(frame_count, elapsed_time, mapper, robot_states)
 
         screen.fill(WHITE)
         render_shared_grid(screen, mapper)
 
-        for wall in walls:
+        for wall in active_walls:
             pygame.draw.line(screen, BLUE, wall[0], wall[1], 4)
+
+        for door in doors.values():
+            door.draw(screen) 
 
         for robot_state in robot_states:
             draw_robot(
@@ -189,10 +262,18 @@ def main():
         if coverage >= TARGET_COVERAGE:
             running = False
 
+    logger.close()
+    print(f"Experiment '{experiment_name}' completed: {coverage*100:.1f}% coverage in {elapsed_time:.1f} seconds with {collision_count} collisions.")
+    print(f"Time: {elapsed_time:.1f} s | Frames: {frame_count} | Collisions: {collision_count}")
+    print(f"Final coverage: {coverage*100:.1f}%")
+    print(f"Log saved to: {logger.path}")
+
     pygame.font.quit()
     pygame.display.quit()
 
 def handle_robot_collisions(robot_states, radius):
+    collision_count = 0
+
     for i in range(len(robot_states)):
         for j in range(i + 1, len(robot_states)):
             r1 = robot_states[i]["robot"]
@@ -202,6 +283,7 @@ def handle_robot_collisions(robot_states, radius):
             dist = math.hypot(dx, dy)
             min_dist = radius * 2
             if 0< dist < min_dist:
+                collision_count += 1
                 overlap = min_dist - dist
 
                 nx = dx/dist
@@ -216,6 +298,7 @@ def handle_robot_collisions(robot_states, radius):
                 r1.omega *= 0.5
                 r2.v *= 0.5
                 r2.omega *= 0.5 
+    return collision_count
 
 if __name__ == "__main__":
     main()
