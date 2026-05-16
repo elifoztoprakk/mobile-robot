@@ -402,6 +402,26 @@ def parse_args():
     )
     return parser.parse_args()
 
+def get_room_name(x, y):
+    if 50 <= x < 400 and 50 <= y < 650:
+        return "left_room"
+
+    if 400 <= x < 850 and 50 <= y < 320:
+        return "upper_right_room"
+
+    if 400 <= x < 650 and 320 <= y < 480:
+        return "middle_room"
+
+    if 650 <= x < 850 and 320 <= y < 480:
+        return "right_corridor"
+
+    if 400 <= x < 650 and 480 <= y < 650:
+        return "lower_middle_room"
+
+    if 650 <= x < 850 and 480 <= y < 650:
+        return "lower_right_room"
+
+    return "unknown"
 
 def main():
     args = parse_args()
@@ -423,6 +443,21 @@ def main():
             "target_coverage": 0.9,
         },
     )
+    logger.log_event(
+        0,
+        0.0,
+        "experiment_start",
+        {
+            "experiment": config.name,
+            "scenario": config.scenario,
+            "localization_mode": config.localization_mode,
+            "resolution": config.resolution,
+            "beams": args.beams,
+            "sensor_range": args.sensor_range,
+        },
+    )
+
+
     pygame.init()
     # Use TOTAL_WIDTH instead of WIDTH
     screen = pygame.display.set_mode((TOTAL_WIDTH, HEIGHT)) 
@@ -437,6 +472,21 @@ def main():
     robot.theta = START_POSE[2]
     odometry_pose = np.array([robot.x, robot.y, robot.theta], dtype=float)
 
+    current_room = get_room_name(robot.x, robot.y)
+
+    logger.log_event(0,
+                     0.0,
+                     "room_entered",
+                        {"room": current_room,
+                         "x": robot.x,
+                         "y": robot.y,
+                         "experiment": config.name,
+                         "scenario": config.scenario,
+                         "localization_mode": config.localization_mode,
+                         "resolution": config.resolution,
+                         "beams": args.beams,
+                        },
+                    )
     environment_landmarks = build_environment_landmarks()
     landmark_sensor = LandmarkSensor(environment_landmarks)
     ekf = EKF(
@@ -453,25 +503,28 @@ def main():
     actual_trajectory = []
     localized_trajectory = []
     frame_count = 0
+    sim_time = 0.0
     cumulative_error = 0.0
     peak_error = 0.0
     current_coverage = 0.0
     collision_count = 0
     previous_door_states = {}
-
+    current_room = get_room_name(robot.x, robot.y)
+    coverage_milestones_logged = set()
    
     robot_brain = AutonomousController(danger_threshold=55.0, forward_speed=60.0)
-    mission_goal = GoalTracker(target_coverage=0.9) 
+    mission_goal = GoalTracker(target_coverage=0.806) 
     
     while True:
         dt = clock.tick(60) / 1000.0
         frame_count += 1
+        sim_time += dt
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 logger.save_summary({
                     "total_frames": frame_count,
-                    "total_time": frame_count * dt,
+                    "total_time": sim_time,
                     "final_coverage": current_coverage,
                     "avg_error": cumulative_error / frame_count,
                     "peak_error": peak_error,
@@ -506,6 +559,18 @@ def main():
             goal_reached, current_coverage = mission_goal.check_goal(grid)
             if goal_reached:
                 print(f"Goal reached! Coverage: {current_coverage:.2%}")
+
+                logger.log_event(
+                        frame_count,
+                        sim_time,
+                        "goal_reached",
+                        {
+                            "coverage": current_coverage,
+                            "frame": frame_count,
+                            "experiment": config.name,
+                        },
+                    )
+
                 robot.v = 0
                 robot.omega = 0
         
@@ -513,16 +578,44 @@ def main():
         robot.update(dt)
         robot.handle_collision(walls)
 
+        new_room = get_room_name(robot.x, robot.y)
+        if new_room != current_room:
+            current_room = new_room
+            logger.log_event(frame_count,
+                             sim_time,
+                             "room_entered",
+                                {"room": current_room,
+                                 "x": robot.x,
+                                 "y": robot.y,
+                                 "experiment": config.name,
+                                 "scenario": config.scenario,
+                                 "localization_mode": config.localization_mode,
+                                 "resolution": config.resolution,
+                                 "beams": args.beams,
+                                 "coverage": current_coverage,
+                                },
+                            )
+
         expected_dist = abs(robot.v) * dt
         actual_dist = math.hypot(robot.x - prev_x, robot.y - prev_y)
         collision_this_frame = expected_dist > 1.0 and actual_dist < expected_dist * 0.3
 
         if collision_this_frame:
             collision_count += 1
-            logger.log_event(frame_count,
-                             frame_count*dt,
-                             "collision", {"frame": frame_count, "x": robot.x, "y": robot.y, 
-                                           "expected_dist": expected_dist, "actual_dist": actual_dist,"v": robot.v, "omega": robot.omega})   
+            logger.log_event(
+                frame_count,
+                sim_time,
+                "collision",
+                {
+                    "frame": frame_count,
+                    "x": robot.x,
+                    "y": robot.y,
+                    "expected_dist": expected_dist,
+                    "actual_dist": actual_dist,
+                    "v": robot.v,
+                    "omega": robot.omega,
+                },
+            )
 
         odometry_pose = integrate_unicycle_pose(odometry_pose, robot.v, robot.omega, dt)
 
@@ -582,6 +675,20 @@ def main():
             grid.update_cell(col, row, is_occupied=True)
 
         current_coverage = grid.get_explored_fraction()
+        for milestone in [0.1, 0.25, 0.5, 0.75, 0.9]:
+            if current_coverage >= milestone and milestone not in coverage_milestones_logged:
+                logger.log_event(
+                    frame_count,
+                    sim_time,
+                    "coverage_milestone",
+                    {
+                        "milestone": milestone,
+                        "coverage": current_coverage,
+                        "experiment": config.name,
+                        "scenario": config.scenario,
+                    },
+                )
+                coverage_milestones_logged.add(milestone)
 
         append_limited(actual_trajectory, (robot.x, robot.y))
         append_limited(localized_trajectory, (localized_pose[0], localized_pose[1]))
@@ -596,15 +703,22 @@ def main():
 
         for name, is_open in door_states.items():
             if name in previous_door_states and previous_door_states[name] != is_open:
-                logger.log_event(frame_count,
-                                 frame_count*dt,
-                                 "door_state_change", {"frame": frame_count, "door": name, "is_open": is_open})
+                logger.log_event(
+                    frame_count,
+                    sim_time,
+                    "door_state_change",
+                    {
+                        "frame": frame_count,
+                        "door": name,
+                        "is_open": is_open,
+                    },
+                )
         previous_door_states = door_states.copy()
 
         if frame_count % 10 == 0:
             logger.log_step({         
                 "frame_count":frame_count,
-                "timestamp":frame_count * dt,
+                "timestamp":sim_time,
                 "controller_type":"autonomous",
                 "experiment":config.name,
                 "scenario":config.scenario,
@@ -719,7 +833,7 @@ def main():
         if args.steps is not None and frame_count >= args.steps:
             logger.save_summary({
                 "total_frames":frame_count,
-                "total_time":frame_count * dt,
+                "total_time":sim_time,
                 "avg_error":cumulative_error / frame_count,
                 "peak_error":peak_error,
                 "final_coverage":current_coverage,

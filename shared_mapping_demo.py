@@ -86,6 +86,8 @@ ROBOT_CONFIGS = [
     {"id": "R3", "color": (60, 165, 110), "start": (180, 540, -0.4)},
     {"id": "R4", "color": (70, 185, 110), "start": (520, 140, 1.2)},
     {"id": "R5", "color": (130, 150, 50), "start": (740, 560, 3.0)},
+    {"id": "R6", "color": (220, 100, 200), "start": (740, 560, 3.0)},
+    {"id": "R7", "color": (80, 100, 80), "start": (220, 100, 3.0)},
 ]
 
 GRID_RESOLUTION = 10
@@ -165,7 +167,9 @@ def main():
     font = pygame.font.SysFont("Arial", 16)
     clock = pygame.time.Clock()
 
-    experiment_name = "shared_mapping_3_robots"
+    num_robots = len(ROBOT_CONFIGS)
+
+    experiment_name = f"shared_mapping_{num_robots}_robots"
     logger = SharedMappingExperimentLogger(experiment_name)
     frame_count = 0
     elapsed_time = 0.0

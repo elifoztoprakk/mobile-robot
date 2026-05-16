@@ -37,12 +37,14 @@ class AutonomousController:
             self.state = "DOORWAY"
 
         elif front_dist < self.danger_threshold:
+            if self.state != "AVOID":
+                if(abs(left_dist - right_dist) < 15):
+                    self.turn_direction = random.choice([-1.0, 1.0])
+                elif left_dist > right_dist:
+                    self.turn_direction = -1.0  
+                else:
+                    self.turn_direction = 1.0
             self.state = "AVOID"
-            
-            if left_dist > right_dist:
-                self.turn_direction = -1.0  
-            else:
-                self.turn_direction = 1.0
 
         elif front_dist > self.danger_threshold *1.3:
             self.state = "WANDER"

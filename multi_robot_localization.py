@@ -3,7 +3,7 @@ import numpy as np
 import pygame
 
 from ekf import EKF
-from visualisation_experiments import (
+from visualization_experiments import (
     append_limited,
     draw_polyline,
     draw_dotted_polyline,
