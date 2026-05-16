@@ -513,7 +513,7 @@ def main():
     coverage_milestones_logged = set()
    
     robot_brain = AutonomousController(danger_threshold=55.0, forward_speed=60.0)
-    mission_goal = GoalTracker(target_coverage=0.806) 
+    mission_goal = GoalTracker(target_coverage=0.79) 
     
     while True:
         dt = clock.tick(60) / 1000.0
